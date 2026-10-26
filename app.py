@@ -2,21 +2,19 @@ import os
 import re
 import json
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Form, File, UploadFile
 from fastapi.responses import HTMLResponse
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
+from jinja2 import Template
 
 load_dotenv()
 
-# =======================================================
-# 1. FASTAPI INITIALIZATION (Resolves Uvicorn Error)
-# =======================================================
 app = FastAPI(title="CodeGuard AI", description="Automated Vulnerability Scanner & Remediation Engine")
 
 # =======================================================
-# 2. LOCAL REGEX PRE-FILTER (SECRETS DETECTION)
+# 1. LAYER 1: LOCAL REGEX PRE-FILTER
 # =======================================================
 SECRET_PATTERNS = {
     "AWS Access Key": r"(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}",
@@ -37,13 +35,13 @@ def scan_local_secrets(code_content: str) -> list[dict]:
                     "owasp_category": "A07:2021-Identification and Authentication Failures",
                     "severity": "Critical",
                     "flagged_line_number": idx,
-                    "explanation": f"Hardcoded credential matching pattern for {name}.",
-                    "refactored_code": "# Use environment variables (os.getenv) or a secret vault instead of hardcoded strings."
+                    "explanation": f"Hardcoded credential detected matching pattern for {name}.",
+                    "refactored_code": "# Retrieve secrets dynamically from environment variables\nimport os\napi_key = os.getenv('SECRET_KEY_NAME')"
                 })
     return findings
 
 # =======================================================
-# 3. AI STATIC CODE AUDITOR (GEMINI API)
+# 2. LAYER 2: AI SEMANTIC AUDITOR (GEMINI)
 # =======================================================
 class VulnerabilityItem(BaseModel):
     vulnerability_type: str = Field(description="Name of flaw, e.g. SQL Injection, Buffer Overflow")
@@ -90,7 +88,7 @@ def scan_with_gemini(code_content: str) -> list[dict]:
     return parsed.get("vulnerabilities", [])
 
 # =======================================================
-# 4. WEB INTERFACE ROUTES
+# 3. INTERACTIVE WEB DASHBOARD UI
 # =======================================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -100,89 +98,173 @@ HTML_TEMPLATE = """
   <title>CodeGuard AI | Security Dashboard</title>
   <style>
     :root {
-      --bg: #0f172a;
+      --bg: #0b1120;
       --card-bg: #1e293b;
       --accent: #38bdf8;
+      --accent-hover: #0ea5e9;
       --text: #f8fafc;
       --muted: #94a3b8;
       --border: #334155;
       --critical: #ef4444;
       --high: #f97316;
+      --btn-export: #10b981;
     }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2.5rem 1rem; }
     .container { max-width: 960px; margin: 0 auto; }
-    h1 { font-size: 2rem; margin-bottom: 0.25rem; }
-    p.sub { color: var(--muted); margin-bottom: 1.5rem; }
-    textarea { width: 100%; height: 200px; background: #090d16; color: #e2e8f0; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; font-family: monospace; font-size: 0.95rem; box-sizing: border-box; }
-    button { background: var(--accent); color: var(--bg); border: none; padding: 0.75rem 1.75rem; border-radius: 6px; font-weight: 700; cursor: pointer; margin-top: 1rem; font-size: 1rem; }
-    button:hover { opacity: 0.9; }
-    .results { margin-top: 2rem; }
-    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; }
-    .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.8rem; font-weight: bold; text-transform: uppercase; }
+    .header { margin-bottom: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+    h1 { font-size: 2.2rem; margin: 0 0 0.5rem 0; color: var(--text); }
+    p.sub { color: var(--muted); margin: 0; font-size: 1rem; }
+    .input-panel { background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; margin-bottom: 2rem; }
+    .field-group { margin-bottom: 1.25rem; }
+    label { display: block; font-weight: 600; margin-bottom: 0.5rem; color: #cbd5e1; }
+    textarea { width: 100%; height: 180px; background: #070c18; color: #e2e8f0; border: 1px solid var(--border); border-radius: 6px; padding: 1rem; font-family: 'Consolas', monospace; font-size: 0.92rem; box-sizing: border-box; }
+    input[type="file"] { background: #070c18; border: 1px dashed var(--border); padding: 0.8rem; border-radius: 6px; width: 100%; color: var(--muted); box-sizing: border-box; }
+    .btn-submit { background: var(--accent); color: #04101e; border: none; padding: 0.85rem 2rem; border-radius: 6px; font-weight: 700; cursor: pointer; font-size: 1rem; transition: background 0.2s; }
+    .btn-submit:hover { background: var(--accent-hover); }
+    .export-bar { display: flex; gap: 0.75rem; margin-top: 1rem; margin-bottom: 1.5rem; }
+    .btn-export { background: transparent; color: var(--btn-export); border: 1px solid var(--btn-export); padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+    .btn-export:hover { background: rgba(16, 185, 129, 0.1); }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin-bottom: 1.25rem; }
+    .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.75rem; font-weight: 800; text-transform: uppercase; }
     .badge-Critical { background: rgba(239, 68, 68, 0.2); color: var(--critical); border: 1px solid var(--critical); }
     .badge-High { background: rgba(249, 115, 22, 0.2); color: var(--high); border: 1px solid var(--high); }
-    pre { background: #090d16; padding: 1rem; border-radius: 6px; overflow-x: auto; color: #a5f3fc; border: 1px solid var(--border); }
+    pre { background: #070c18; padding: 1rem; border-radius: 6px; overflow-x: auto; color: #a5f3fc; border: 1px solid var(--border); font-family: 'Consolas', monospace; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>CodeGuard AI</h1>
-    <p class="sub">Automated static code vulnerability detection and remediation pipeline.</p>
+    <div class="header">
+      <h1>CodeGuard AI</h1>
+      <p class="sub">Automated Static Code Analysis, Vulnerability Auditing & Remediation Pipeline</p>
+    </div>
     
-    <form method="post" action="/scan">
-      <label for="code"><strong>Input Source Code:</strong></label><br><br>
-      <textarea id="code" name="code" placeholder="Paste source code (Python, C++, SQL, etc.) here...">{{ code_content }}</textarea><br>
-      <button type="submit">Run Security Audit</button>
-    </form>
+    <div class="input-panel">
+      <form method="post" action="/scan" enctype="multipart/form-data">
+        <div class="field-group">
+          <label for="code">Option A: Paste Source Code</label>
+          <textarea id="code" name="code" placeholder="Paste source code (Python, C++, Java, JS, SQL) here...">{{ code_content }}</textarea>
+        </div>
+
+        <div class="field-group">
+          <label for="file_upload">Option B: Or Upload Source File (.py, .cpp, .c, .js, .sql, .txt)</label>
+          <input type="file" id="file_upload" name="file_upload" accept=".py,.cpp,.c,.js,.ts,.java,.cs,.sql,.txt">
+        </div>
+
+        <button type="submit" class="btn-submit">Run Security Audit</button>
+      </form>
+    </div>
 
     {% if total_issues is not none %}
     <div class="results">
-      <h2>Audit Findings ({{ total_issues }} Issue{% if total_issues != 1 %}s{% endif %} Detected)</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 style="margin: 0;">Audit Findings ({{ total_issues }} Issue{% if total_issues != 1 %}s{% endif %} Flagged)</h2>
+        {% if total_issues > 0 %}
+        <div class="export-bar">
+          <button class="btn-export" onclick="exportMarkdown()">Download Report (.md)</button>
+          <button class="btn-export" onclick="exportJSON()">Download Report (.json)</button>
+        </div>
+        {% endif %}
+      </div>
+
       {% if total_issues == 0 %}
-        <div class="card" style="border-color: #22c55e;">
-          <p style="color: #4ade80; margin: 0; font-weight: bold;">✔ No security flaws or hardcoded secrets detected in the submitted snippet.</p>
+        <div class="card" style="border-color: #22c55e; margin-top: 1rem;">
+          <p style="color: #4ade80; margin: 0; font-weight: bold;">✔ Clean Scan: No OWASP vulnerabilities or hardcoded secrets detected.</p>
         </div>
       {% endif %}
+
       {% for vuln in vulnerabilities %}
-        <div class="card">
+        <div class="card" style="margin-top: 1rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
             <h3 style="margin: 0;">{{ vuln.vulnerability_type }} ({{ vuln.cwe_id }})</h3>
             <span class="badge badge-{{ vuln.severity }}">{{ vuln.severity }}</span>
           </div>
-          <p style="color: var(--muted); margin: 0.25rem 0;"><strong>OWASP Category:</strong> {{ vuln.owasp_category }} | <strong>Flagged Line:</strong> {{ vuln.flagged_line_number }}</p>
+          <p style="color: var(--muted); margin: 0.25rem 0;">
+            <strong>OWASP Category:</strong> {{ vuln.owasp_category }} | <strong>Line:</strong> {{ vuln.flagged_line_number }}
+          </p>
           <p>{{ vuln.explanation }}</p>
-          <strong>Remediated Implementation:</strong>
+          <label><strong>Recommended Remediation:</strong></label>
           <pre><code>{{ vuln.refactored_code }}</code></pre>
         </div>
       {% endfor %}
     </div>
     {% endif %}
   </div>
+
+  <script>
+    const reportData = {{ report_json | safe if report_json else "null" }};
+
+    function exportJSON() {
+      if (!reportData) return;
+      const blob = new Blob([JSON.stringify(reportData, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "codeguard_audit_report.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function exportMarkdown() {
+      if (!reportData) return;
+      let md = `# CodeGuard AI - Security Audit Report\\n\\n`;
+      md += `**Target:** ${reportData.target}\\n`;
+      md += `**Total Issues Detected:** ${reportData.total_issues}\\n\\n`;
+      md += `## Findings\\n\\n`;
+      reportData.vulnerabilities.forEach((v, i) => {
+        md += `### ${i + 1}. ${v.vulnerability_type} (${v.cwe_id})\\n`;
+        md += `- **Severity:** ${v.severity}\\n`;
+        md += `- **OWASP:** ${v.owasp_category}\\n`;
+        md += `- **Flagged Line:** ${v.flagged_line_number}\\n\\n`;
+        md += `**Explanation:**\\n${v.explanation}\\n\\n`;
+        md += `**Remediation:**\\n\`\`\`\\n${v.refactored_code}\\n\`\`\`\\n\\n---\\n\\n`;
+      });
+
+      const blob = new Blob([md], { type: "text/markdown" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "codeguard_audit_report.md";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  </script>
 </body>
 </html>
 """
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
-    # Render empty dashboard on initial load
-    from jinja2 import Template
     t = Template(HTML_TEMPLATE)
-    return t.render(code_content="", total_issues=None, vulnerabilities=[])
+    return t.render(code_content="", total_issues=None, vulnerabilities=[], report_json=None)
 
 @app.post("/scan", response_class=HTMLResponse)
-async def run_scan(code: str = Form(...)):
-    # 1. Fast local regex detection
-    local_findings = scan_local_secrets(code)
+async def run_scan(code: str = Form(""), file_upload: UploadFile = File(None)):
+    target_name = "Pasted Snippet"
     
-    # 2. Semantic Gemini analysis
+    # Priority: If a file is uploaded, read its contents
+    if file_upload and file_upload.filename:
+        file_bytes = await file_upload.read()
+        code = file_bytes.decode("utf-8", errors="ignore")
+        target_name = file_upload.filename
+
+    # Step 1: Local regex secret detection
+    local_findings = scan_local_secrets(code) if code.strip() else []
+
+    # Step 2: Semantic AI analysis
     ai_findings = scan_with_gemini(code) if code.strip() else []
-    
+
     all_findings = local_findings + ai_findings
 
-    from jinja2 import Template
+    report_payload = {
+        "target": target_name,
+        "total_issues": len(all_findings),
+        "vulnerabilities": all_findings
+    }
+
     t = Template(HTML_TEMPLATE)
     return t.render(
         code_content=code,
         total_issues=len(all_findings),
-        vulnerabilities=all_findings
+        vulnerabilities=all_findings,
+        report_json=json.dumps(report_payload)
     )

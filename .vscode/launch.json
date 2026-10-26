@@ -8,8 +8,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "c:/Users/ameen/OneDrive/Desktop/CS4500_Final",
-      "program": "c:/Users/ameen/OneDrive/Desktop/CS4500_Final/build/Debug/outDebug",
+      "cwd": "c:/Users/ameen/OneDrive/Desktop/CS4500_Final/test_samples",
+      "program": "c:/Users/ameen/OneDrive/Desktop/CS4500_Final/test_samples/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [
